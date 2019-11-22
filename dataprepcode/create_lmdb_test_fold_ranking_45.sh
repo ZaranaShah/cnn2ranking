@@ -1,7 +1,7 @@
 
-DATA=/home/asus/Downloads/CNN2ELM/
-DEF_FILES=/home/asus/Downloads/cnn2ranking/folds/train_val_txt_files_per_ranking/test_fold_ranking_10
-OUT=/home/asus/Downloads/cnn2ranking/folds/train_val_txt_files_per_ranking/test_fold_ranking_10
+DATA=cnn2ranking/
+DEF_FILES=cnn2ranking/folds/train_val_txt_files_per_ranking/test_fold_ranking_45
+OUT=cnn2ranking/folds/train_val_txt_files_per_ranking/test_fold_ranking_45
 
 # Set RESIZE=true to resize the images to 256x256. Leave as false if images have
 # already been resized using another tool.
