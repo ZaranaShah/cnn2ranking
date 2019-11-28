@@ -18,14 +18,13 @@ fi
 
 
 echo "Creating  train leveldb..."
-convert_imageset --resize_height=$RESIZE_HEIGHT --resize_width=$RESIZE_WIDTH --shuffle  $DATA $DEF_FILES/age_train.txt $OUT/age_train_lmdb 
+convert_imageset --resize_height=$RESIZE_HEIGHT --resize_width=$RESIZE_WIDTH --shuffle  $DATA $DEF_FILES/age_train.txt $OUT/age_train_lmdb
 
 echo "Creating  train subset leveldb..."
-convert_imageset --resize_height=$RESIZE_HEIGHT --resize_width=$RESIZE_WIDTH --shuffle  $DATA $DEF_FILES/age_test.txt $OUT/age_test_lmdb 
+convert_imageset --resize_height=$RESIZE_HEIGHT --resize_width=$RESIZE_WIDTH --shuffle  $DATA $DEF_FILES/age_test.txt $OUT/age_test_lmdb
 
 echo "Creating  val leveldb..."
-convert_imageset --resize_height=$RESIZE_HEIGHT --resize_width=$RESIZE_WIDTH --shuffle  $DATA $DEF_FILES/age_val.txt $OUT/age_val_lmdb 
-
+convert_imageset --resize_height=$RESIZE_HEIGHT --resize_width=$RESIZE_WIDTH --shuffle  $DATA $DEF_FILES/age_val.txt $OUT/age_val_lmdb
 
 
 
