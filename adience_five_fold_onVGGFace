@@ -1,0 +1,263 @@
+#This code is for 5 fold cross validation on adience
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision
+import torchvision.transforms as transforms
+from torchvision import models
+import numpy as np
+import skimage.io as io
+from skimage.transform import rotate, AffineTransform, warp
+from skimage.util import random_noise
+from skimage.filters import gaussian
+import matplotlib.pyplot as plt
+print(torch.__version__)
+print(torchvision.__version__)
+print(torch.cuda.get_device_name(0))
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+from skimage import io, transform
+import pandas as pd
+import os
+from PIL import Image
+from torch.utils.data import Dataset, DataLoader 
+class FaceDataset(Dataset):
+    def __init__(self, csv_file, root_dir, transform=None):
+        frame=[]
+        for f in csv_file:
+          frame.append( pd.read_csv(f))
+        self.age_frame=pd.concat(frame, axis=0)
+        self.root_dir = root_dir
+        self.transform = transform
+    def __len__(self):
+        return len(self.age_frame)
+    def __getitem__(self, idx):
+        img_name = os.path.join(self.root_dir,self.age_frame.iloc[idx, 0],self.age_frame.iloc[idx, 1])
+        image = io.imread(img_name)
+        age = self.age_frame.iloc[idx, 2]
+        age = age.astype('uint8')
+        if self.transform:
+          image = self.transform(Image.open(img_name).convert('RGB'))
+        if 'b_age' in self.age_frame.columns and 'ageGrp' in self.age_frame.columns:
+          sample = {'image': image, 'age': age, 'path': img_name ,'ageGrp':self.age_frame.iloc[idx, 3].astype('uint8'),'b_age':self.age_frame.iloc[idx, 4].astype('uint8')}
+        elif 'ageGrp' in self.age_frame.columns:
+          sample = {'image': image, 'age': age, 'path': img_name ,'ageGrp':self.age_frame.iloc[idx, 3].astype('uint8')}
+        else:  
+          sample = {'image': image, 'age': age, 'path': img_name}
+        return sample
+
+def train_model(model, dataloaders, criterion, optimizer,coloumn, num_epochs=25,is_inception=False):
+    since = time.time()
+    val_acc_history = []
+    best_model_wts = copy.deepcopy(model.state_dict())
+    best_acc = 0.0
+    for epoch in range(num_epochs):
+        print('Epoch {}/{}'.format(epoch, num_epochs - 1))
+        print('-' * 10)
+        # Each epoch has a training and validation phase
+        for phase in ['train', 'val']:
+            if phase == 'train':
+                model.train()  # Set model to training mode
+            else:
+                model.eval()   # Set model to evaluate mode
+            running_loss = 0.0
+            running_corrects = 0
+            # Iterate over data.
+            for z in dataloaders[phase]:
+                inputs = z['image'].to(device)
+                labels = z[coloumn].to(device)     
+                # zero the parameter gradients
+                optimizer.zero_grad()
+                # forward
+                # track history if only in train
+                with torch.set_grad_enabled(phase == 'train'):
+                    # Get model outputs and calculate loss
+                    # Special case for inception because in training it has an auxiliary output. In train
+                    #   mode we calculate the loss by summing the final output and the auxiliary output
+                    #   but in testing we only consider the final output.
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels.type(torch.cuda.LongTensor))
+                    _, preds = torch.max(outputs, 1)
+                    # backward + optimize only if in training phase
+                    if phase == 'train':
+                        loss.backward()
+                        optimizer.step()
+                # statistics
+                running_loss += loss.item() * inputs.size(0)
+                running_corrects += torch.sum(preds == labels.data)
+            epoch_loss = running_loss / len(dataloaders[phase].dataset)
+            epoch_acc = running_corrects.double() / len(dataloaders[phase].dataset)
+            print('{} Loss: {:.4f} Acc: {:.4f}'.format(phase, epoch_loss, epoch_acc))
+            # deep copy the model
+            if phase == 'val' and epoch_acc > best_acc:
+                best_acc = epoch_acc
+                best_model_wts = copy.deepcopy(model.state_dict())
+            if phase == 'val':
+                val_acc_history.append(epoch_acc)
+        print()
+    time_elapsed = time.time() - since
+    print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
+    print('Best val Acc: {:4f}'.format(best_acc))
+    # load best model weights
+    model.load_state_dict(best_model_wts)
+    return model, val_acc_history
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+transformed_dataset = FaceDataset(csv_file=['fold_0_data.csv','fold_1_data.csv','fold_2_data.csv','fold_3_data.csv'],
+                                           root_dir='',
+                                           transform=transforms.Compose([
+                                               transforms.Resize(256),
+                                               transforms.CenterCrop(224),
+                                               transforms.ToTensor(),
+                                               transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0]!=3 else x), #to transform grey to rgb
+                                               transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
+                                           ]))
+
+test_dataset = FaceDataset(csv_file=['fold_4_data.csv'],
+                                           root_dir='',
+                                           transform=transforms.Compose([
+                                               transforms.Resize(256),
+                                               transforms.CenterCrop(224),
+                                               transforms.ToTensor(),
+                                               transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0]!=3 else x), #to transform grey to rgb
+                                               transforms.Normalize(mean=[0.485, 0.456, 0.406],std= [0.229, 0.224, 0.225])
+                                           ]))
+
+import numpy as np
+from torch.utils.data.sampler import SubsetRandomSampler
+dataset_size=len(transformed_dataset)
+train_size = int(0.8 * dataset_size)
+val_size = dataset_size-train_size
+train_dataset,val_dataset= torch.utils.data.random_split(transformed_dataset, [train_size,val_size])
+shuffle_dataset = True
+random_seed= 42
+batch_size=32
+train_loader = DataLoader(train_dataset, batch_size=batch_size,num_workers=4,shuffle=False)
+val_loader =DataLoader(val_dataset, batch_size=batch_size,num_workers=4,shuffle=False)
+test_loader=DataLoader(test_dataset, batch_size=batch_size,num_workers=4,shuffle=False)
+import time
+import copy
+import torch.optim as optim
+C1net=vgg_face_dag('vgg_face_dag.pth')
+num_ftrs = C1net.fc7.in_features# convert all the layers to list and remove the last one
+C1net.fc8 = nn.Linear(num_ftrs,7)
+input_size = 224
+C1net=C1net.to(device)
+optimizer = optim.SGD(C1net.parameters(), lr=0.001 ,momentum=0.9)
+criterion = nn.CrossEntropyLoss()
+dataloaders_dict = {'train': train_loader , 'val': val_loader}
+trained_C1net , hist = train_model(C1net, dataloaders_dict, criterion, optimizer,'age', num_epochs=20)
+trained_C1net.eval()
+correct = 0
+total = 0
+with torch.no_grad():
+    for z in test_loader:
+        inputs = z['image'].to(device)
+        labels = z['age'].to(device)
+        outputs = trained_C1net(inputs)
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+
+print('Accuracy of the network on the test images: %d %%' % (100 * correct / total))
+correct = 0
+total = 0
+with torch.no_grad():
+    for z in test_loader:
+        inputs = z['image'].to(device)
+        labels = z['age'].to(device)
+        outputs = trained_C1net(inputs)
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += ((predicted == labels)).sum().item()
+        correct += (torch.abs(predicted-labels)==1).sum().item()
+
+print('1-off Accuracy of the network on the test images: %d %%' % (100 * correct / total))
+
+
+#Upto this is code is for one fold replace transformed_dataset and test_dataset as per following lines and rerun code to get five fold cross validation on VGGFace network by adience dataset 
+
+
+#Replace this code for 2nd fold and re-run above program
+transformed_dataset = FaceDataset(csv_file=['fold_0_data.csv','fold_1_data.csv','fold_2_data.csv','fold_4_data.csv'],
+                                           root_dir='',
+                                           transform=transforms.Compose([
+                                               transforms.Resize(256),
+                                               transforms.CenterCrop(224),
+                                               transforms.ToTensor(),
+                                               transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0]!=3 else x), #to transform grey to rgb
+                                               transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
+                                           ]))
+
+test_dataset = FaceDataset(csv_file=['fold_3_data.csv'],
+                                           root_dir='',
+                                           transform=transforms.Compose([
+                                               transforms.Resize(256),
+                                               transforms.CenterCrop(224),
+                                               transforms.ToTensor(),
+                                               transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0]!=3 else x), #to transform grey to rgb
+                                               transforms.Normalize(mean=[0.485, 0.456, 0.406],std= [0.229, 0.224, 0.225])
+                                           ]))
+
+#Replace this code for 3rd fold and re-run above program
+transformed_dataset = FaceDataset(csv_file=['fold_0_data.csv','fold_1_data.csv','fold_3_data.csv','fold_4_data.csv'],
+                                           root_dir='',
+                                           transform=transforms.Compose([
+                                               transforms.Resize(256),
+                                               transforms.CenterCrop(224),
+                                               transforms.ToTensor(),
+                                               transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0]!=3 else x), #to transform grey to rgb
+                                               transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
+                                           ]))
+
+test_dataset = FaceDataset(csv_file=['fold_2_data.csv'],
+                                           root_dir='',
+                                           transform=transforms.Compose([
+                                               transforms.Resize(256),
+                                               transforms.CenterCrop(224),
+                                               transforms.ToTensor(),
+                                               transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0]!=3 else x), #to transform grey to rgb
+                                               transforms.Normalize(mean=[0.485, 0.456, 0.406],std= [0.229, 0.224, 0.225])
+                                           ]))
+
+#Replace this code for 4th fold and re-run above program
+transformed_dataset = FaceDataset(csv_file=['fold_0_data.csv','fold_2_data.csv','fold_3_data.csv','fold_4_data.csv'],
+                                           root_dir='',
+                                           transform=transforms.Compose([
+                                               transforms.Resize(256),
+                                               transforms.CenterCrop(224),
+                                               transforms.ToTensor(),
+                                               transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0]!=3 else x), #to transform grey to rgb
+                                               transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
+                                           ]))
+
+test_dataset = FaceDataset(csv_file=['fold_1_data.csv'],
+                                           root_dir='',
+                                           transform=transforms.Compose([
+                                               transforms.Resize(256),
+                                               transforms.CenterCrop(224),
+                                               transforms.ToTensor(),
+                                               transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0]!=3 else x), #to transform grey to rgb
+                                               transforms.Normalize(mean=[0.485, 0.456, 0.406],std= [0.229, 0.224, 0.225])
+                                           ]))
+
+#Replace this code for 5th fold and re-run above program
+transformed_dataset = FaceDataset(csv_file=['fold_1_data.csv','fold_2_data.csv','fold_3_data.csv','fold_4_data.csv'],
+                                           root_dir='',
+                                           transform=transforms.Compose([
+                                               transforms.Resize(256),
+                                               transforms.CenterCrop(224),
+                                               transforms.ToTensor(),
+                                               transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0]!=3 else x), #to transform grey to rgb
+                                               transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
+                                           ]))
+
+test_dataset = FaceDataset(csv_file=['fold_0_data.csv'],
+                                           root_dir='',
+                                           transform=transforms.Compose([
+                                               transforms.Resize(256),
+                                               transforms.CenterCrop(224),
+                                               transforms.ToTensor(),
+                                               transforms.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0]!=3 else x), #to transform grey to rgb
+                                               transforms.Normalize(mean=[0.485, 0.456, 0.406],std= [0.229, 0.224, 0.225])
+                                           ]))
